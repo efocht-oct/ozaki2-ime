@@ -152,33 +152,51 @@ int run_test_sgemm(int M, int N, int K, size_t lambda) {
     }
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     // Disable buffering on stdout to ensure prints show up immediately
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
+    // Default values
+    size_t lambda = 8;
+
+    // Parse command line arguments
+    // Usage: test_ozaki [lambda] [VLEN]
+    if (argc > 1) {
+        lambda = (size_t)atoi(argv[1]);
+    }
+    if (argc > 2) {
+        // VLEN argument is ignored - detected from hardware
+    }
+
+    const char *env_lambda = getenv("LAMBDA");
+    if (!env_lambda && argc <= 1) {
+        lambda = 8;
+    } else if (env_lambda && argc <= 1) {
+        lambda = (size_t)atoi(env_lambda);
+    }
+
     printf("Ozaki-2 IME Test Suite\n");
     printf("======================\n");
+    
+    // Detect hardware VLEN at runtime
+    size_t vlmax_e32m1 = __riscv_vsetvl_e32m1(~0ULL);
+    size_t hw_vlen = vlmax_e32m1 * 32;
+    printf("Hardware VLEN=%zu, Configured lambda=%zu\n", hw_vlen, lambda);
 
     int total_errors = 0;
 
-    // Test different lambda values
-    size_t lambdas[] = {1, 4, 8};
-    int num_lambdas = sizeof(lambdas) / sizeof(lambdas[0]);
-
-    for (int i = 0; i < num_lambdas; i++) {
-        size_t lambda = lambdas[i];
-        printf("\n--- Testing with lambda=%zu ---\n", lambda);
-        
-        // Small matrix tests
-        total_errors += run_test_dgemm(64, 64, 64, lambda);
-        total_errors += run_test_sgemm(64, 64, 64, lambda);
-        
-        // Larger matrix tests (up to 16384 VLEN support)
-        // Note: Full 16384 VLEN testing requires large memory, using 128x128 for CI speed
-        total_errors += run_test_dgemm(128, 128, 128, lambda);
-        total_errors += run_test_sgemm(128, 128, 128, lambda);
-    }
+    // Test the specific lambda value (passed from outside)
+    printf("\n--- Testing with lambda=%zu ---\n", lambda);
+    
+    // Small matrix tests
+    total_errors += run_test_dgemm(64, 64, 64, lambda);
+    total_errors += run_test_sgemm(64, 64, 64, lambda);
+    
+    // Larger matrix tests (up to 16384 VLEN support)
+    // Note: Full 16384 VLEN testing requires large memory, using 128x128 for CI speed
+    total_errors += run_test_dgemm(128, 128, 128, lambda);
+    total_errors += run_test_sgemm(128, 128, 128, lambda);
 
     printf("\n======================\n");
     if (total_errors == 0) {

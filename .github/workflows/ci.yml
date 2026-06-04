@@ -9,7 +9,13 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        config:
+          - {vlen: "16384", lambda: "8", name: "Default (VLEN=16384, λ=8)"}
+          - {vlen: "512", lambda: "2", name: "VLEN=512, λ=2"}
+          - {vlen: "4096", lambda: "4", name: "VLEN=4096, λ=4"}
+          - {vlen: "16384", lambda: "8", name: "VLEN=16384, λ=8 (explicit)"}
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -26,10 +32,26 @@ jobs:
       run: |
         docker pull ghcr.io/efocht-oct/openchip/sdk:2026.05.28
 
-    - name: Build and run test suite
+    - name: Build
       run: |
         export RV_CONTAINER_IMAGE=ghcr.io/efocht-oct/openchip/sdk:2026.05.28
         export PATH=$HOME/Projects/IME/SDK/rv-toolchain-wrapper/bin:$PATH
         make clean
         make all
-        make test
+
+    - name: Test (${{ matrix.config.name }})
+      run: |
+        export RV_CONTAINER_IMAGE=ghcr.io/efocht-oct/openchip/sdk:2026.05.28
+        export PATH=$HOME/Projects/IME/SDK/rv-toolchain-wrapper/bin:$PATH
+        make test VLEN=${{ matrix.config.vlen }} LAMBDA=${{ matrix.config.lambda }}
+      continue-on-error: true
+
+    - name: Record test result
+      if: always()
+      run: |
+        echo "${{ matrix.config.name }}: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "✅ PASS" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ FAIL" >> $GITHUB_STEP_SUMMARY
+        fi

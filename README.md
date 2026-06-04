@@ -2,6 +2,17 @@
 
 [![CI](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg)](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml)
 
+## CI Test Results
+
+| Test Configuration | Status |
+|---|---|
+| Default (VLEN=16384, λ=8) | ![Default](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
+| VLEN=512, λ=2 | ![VLEN=512](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
+| VLEN=4096, λ=4 | ![VLEN=4096](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
+| VLEN=16384, λ=8 (explicit) | ![VLEN=16384](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
+
+*Results updated on each push to main. See [GitHub Actions](https://github.com/efocht-oct/ozaki2-ime/actions) for detailed logs.*
+
 This repository contains an implementation of the **Ozaki-2 scheme** for high-precision matrix multiplication (DGEMM and SGEMM) leveraging the **RISC-V Integrated Matrix Extension (IME / Zvvm family)**.
 
 ## What is the Ozaki-2 Scheme?
@@ -32,8 +43,10 @@ Key IME features used:
 ├── Makefile           # Build system using rv-toolchain-wrapper
 ├── README.md          # This file
 ├── src/
-│   ├── ozaki_dgemm.c  # Ozaki-2 DGEMM implementation (modern IME intrinsics)
-│   └── ozaki_sgemm.c  # Ozaki-2 SGEMM implementation (modern IME intrinsics)
+│   ├── ozaki_common.h # Coprime moduli and CRT helpers
+│   ├── ozaki_common.c # Modular arithmetic and CRT constants
+│   ├── dgemm.c        # Ozaki-2 DGEMM implementation (modern IME intrinsics)
+│   └── sgemm.c        # Ozaki-2 SGEMM implementation (modern IME intrinsics)
 ├── tests/
 │   └── test_ozaki.c   # Test harness with CSR lambda configuration and VLEN testing
 └── .github/

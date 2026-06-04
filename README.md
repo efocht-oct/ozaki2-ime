@@ -1,5 +1,7 @@
 # Ozaki-2 Scheme with RISC-V Integrated Matrix Extension (IME)
 
+[![CI](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg)](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml)
+
 This repository contains an implementation of the **Ozaki-2 scheme** for high-precision matrix multiplication (DGEMM and SGEMM) leveraging the **RISC-V Integrated Matrix Extension (IME / Zvvm family)**.
 
 ## What is the Ozaki-2 Scheme?
@@ -15,7 +17,7 @@ This approach avoids the accumulation of rounding errors inherent in standard fl
 
 ## RISC-V IME (Zvvm) Integration
 
-The implementation utilizes the RISC-V Zvvm family of Integrated Matrix extensions, which accelerates matrix multiplication using the existing RISC-V Vector (V) register file, without introducing new architected state.
+The implementation utilizes the RISC-V Zvvm family of Integrated Matrix extensions, which accelerates matrix multiplication using the existing RISC-V Vector (V) register file, without introducing separate matrix registers.
 
 Key IME features used:
 - **Tile Geometry**: Configured via the `lambda` (λ) field in the `vtype` CSR.

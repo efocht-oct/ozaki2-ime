@@ -6,25 +6,22 @@
 #include <riscv_vector.h>
 #include "ozaki_common.h"
 
-// Hardware Parameters
-#define M_TILE 64
-#define K_EFF 32
-#define MAX_N_TILE 64
-
 /**
- * Inner Zvvm Kernel: Computes a single 64x64 tile of C modulo m_t
- * Uses modern IME intrinsics with configurable lambda.
+ * Inner Zvvm Kernel: Computes a single tile of C modulo m_t
+ * Uses modern IME intrinsics with configurable lambda and dynamic geometry.
  */
 #ifdef MOCK_IME
 static inline void zvvm_kernel_int8_mac(
     int32_t* C_tile, const uint8_t* A_mod, const int8_t* B_mod, 
-    int K, int lda, int ldb, size_t requested_vl, size_t lambda) 
+    int K, int lda, int ldb, size_t requested_vl, size_t lambda,
+    size_t M_TILE, size_t K_EFF, size_t MAX_N_TILE) 
 {
     (void)requested_vl;
     (void)lambda;
+    (void)K_EFF;
     memset(C_tile, 0, M_TILE * MAX_N_TILE * sizeof(int32_t));
-    for (int ii = 0; ii < M_TILE; ii++) {
-        for (int jj = 0; jj < MAX_N_TILE; jj++) {
+    for (int ii = 0; ii < (int)M_TILE; ii++) {
+        for (int jj = 0; jj < (int)MAX_N_TILE; jj++) {
             int32_t acc = 0;
             for (int k = 0; k < K; k++) {
                 uint8_t a = A_mod[ii * lda + k];
@@ -38,10 +35,11 @@ static inline void zvvm_kernel_int8_mac(
 #else
 static inline void zvvm_kernel_int8_mac(
     int32_t* C_tile, const uint8_t* A_mod, const int8_t* B_mod, 
-    int K, int lda, int ldb, size_t requested_vl, size_t lambda) 
+    int K, int lda, int ldb, size_t requested_vl, size_t lambda,
+    size_t M_TILE, size_t K_EFF, size_t MAX_N_TILE) 
 {
-    // Configure vector unit for SEW=32, LMUL=2 (EMUL_C=2 for VLEN=16384, lambda=8)
-    // Note: For LMUL=8 inputs, EMUL_C = LMUL / 4 = 2.
+    (void)M_TILE;
+    // Configure vector unit for SEW=32, LMUL=2 (EMUL_C=2)
     size_t vl = __riscv_vsetvl_e32m2(requested_vl);
     
     // Establish lambda (must be done after vsetvl as hardware may clamp lambda under WARL)
@@ -65,25 +63,42 @@ static inline void zvvm_kernel_int8_mac(
         acc = __riscv_vqwmmacc_vv_i32m2_us_lm8(acc, va, vb, vl);
     }
     
-    // Store the modular cross-term 64x64 tile to memory
+    // Store the modular cross-term to memory
     __riscv_vmts_v_i32m2(C_tile, MAX_N_TILE, acc, vl);
 }
 #endif
 
 /**
- * Classic SGEMM Wrapper utilizing Ozaki Scheme II on Zvvm
+ * Dynamic SGEMM utilizing Ozaki Scheme II with dynamic lambda/VLEN detection.
  */
 void ozaki_sgemm(int M, int N, int K, float alpha, 
                  const float *A, int lda, 
                  const float *B, int ldb, 
-                 float beta, float *C, int ldc, size_t lambda) 
+                 float beta, float *C, int ldc) 
 {
-    // 1. Exponent Scaling & Modular Reduction (Software)
+    // 1. Detect dynamic lambda and VLEN from the hardware CSR
+    size_t lambda = __riscv_vsetlambda(0);
+    if (lambda == 0) lambda = 8; // Fallback to 8 if unconfigured/unsupported
+
+    size_t vlmax_e32m1 = __riscv_vsetvl_e32m1(~0ULL);
+    size_t VLEN = vlmax_e32m1 * 32;
+
+    // 2. Compute runtime configuration parameters from (VLEN, lambda, SEW=32)
+    size_t M_TILE = VLEN / (32 * lambda);
+    size_t K_EFF = lambda * 4;
+    size_t MAX_N_TILE = (VLEN * 2 / 32) / lambda;
+
+    if (M_TILE == 0) M_TILE = 1;
+    if (MAX_N_TILE == 0) MAX_N_TILE = 1;
+
+    // 3. Exponent Scaling & Modular Reduction (Software)
     uint8_t* A_mod[NUM_MODULI];
     int8_t* B_mod[NUM_MODULI];
+    int32_t* C_mod[NUM_MODULI];
     for (int t = 0; t < NUM_MODULI; t++) {
         A_mod[t] = (uint8_t*)malloc(M * K * sizeof(uint8_t));
         B_mod[t] = (int8_t*)malloc(K * N * sizeof(int8_t));
+        C_mod[t] = (int32_t*)malloc(M_TILE * MAX_N_TILE * sizeof(int32_t));
     }
 
     // Extract maximum exponents (D and E scale factors)
@@ -91,7 +106,7 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
     for (int i = 0; i < M * K; i++) max_A = fmaxf(max_A, fabsf(A[i]));
     for (int i = 0; i < K * N; i++) max_B = fmaxf(max_B, fabsf(B[i]));
     
-    // Scale factors to map FP32 mantissas to integers (23-bit mantissa + 1 sign bit)
+    // Scale factors to map FP32 mantissas to integers
     float scale_A = (max_A == 0.0f) ? 1.0f : exp2f(-floorf(log2f(max_A)) + 23); 
     float scale_B = (max_B == 0.0f) ? 1.0f : exp2f(-floorf(log2f(max_B)) + 23);
 
@@ -116,14 +131,11 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
         }
     }
 
-    // 2. Tiled Matrix Multiplication (Zvvm Hardware)
-    int32_t C_mod[NUM_MODULI][M_TILE * MAX_N_TILE];
-    
-    // VL required to process full 64x64 block. N_TILE * lambda = 64 * 8 = 512.
-    size_t vl = MAX_N_TILE * 8; 
+    // 4. Tiled Matrix Multiplication (Zvvm Hardware)
+    size_t vl = MAX_N_TILE * lambda; 
 
-    for (int i = 0; i < M; i += M_TILE) {
-        for (int j = 0; j < N; j += MAX_N_TILE) {
+    for (size_t i = 0; i < (size_t)M; i += M_TILE) {
+        for (size_t j = 0; j < (size_t)N; j += MAX_N_TILE) {
             
             // Compute this tile for all moduli
             for (int t = 0; t < NUM_MODULI; t++) {
@@ -131,13 +143,14 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
                     C_mod[t], 
                     &A_mod[t][i * K], 
                     &B_mod[t][j],
-                    K, K, N, vl, lambda
+                    K, K, N, vl, lambda,
+                    M_TILE, K_EFF, MAX_N_TILE
                 );
             }
 
-            // 3. CRT Reconstruction & Inverse Scaling (Software)
-            for (int ii = 0; ii < M_TILE && (i + ii) < M; ii++) {
-                for (int jj = 0; jj < MAX_N_TILE && (j + jj) < N; jj++) {
+            // 5. CRT Reconstruction & Inverse Scaling (Software)
+            for (size_t ii = 0; ii < M_TILE && (i + ii) < (size_t)M; ii++) {
+                for (size_t jj = 0; jj < MAX_N_TILE && (j + jj) < (size_t)N; jj++) {
                     unsigned __int128 exact_int_C_u = 0;
                     unsigned __int128 uCRT_M = (unsigned __int128)CRT_M;
 
@@ -176,5 +189,19 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
     for (int t = 0; t < NUM_MODULI; t++) {
         free(A_mod[t]);
         free(B_mod[t]);
+        free(C_mod[t]);
     }
+}
+
+/**
+ * Legacy/Fixed SGEMM Wrapper for lambda=8 (does not need lambda as input parameter)
+ */
+void ozaki_sgemm_l8(int M, int N, int K, float alpha, 
+                    const float *A, int lda, 
+                    const float *B, int ldb, 
+                    float beta, float *C, int ldc) 
+{
+    // In real HW / correct test execution, lambda=8 must be set in the test harness
+    // before this function is called.
+    ozaki_sgemm(M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
 }

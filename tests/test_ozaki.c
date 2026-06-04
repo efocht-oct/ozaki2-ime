@@ -9,12 +9,22 @@
 void ozaki_dgemm(int M, int N, int K, double alpha, 
                  const double *A, int lda, 
                  const double *B, int ldb, 
-                 double beta, double *C, int ldc, size_t lambda);
+                 double beta, double *C, int ldc);
 
 void ozaki_sgemm(int M, int N, int K, float alpha, 
                  const float *A, int lda, 
                  const float *B, int ldb, 
-                 float beta, float *C, int ldc, size_t lambda);
+                 float beta, float *C, int ldc);
+
+void ozaki_dgemm_l8(int M, int N, int K, double alpha, 
+                    const double *A, int lda, 
+                    const double *B, int ldb, 
+                    double beta, double *C, int ldc);
+
+void ozaki_sgemm_l8(int M, int N, int K, float alpha, 
+                    const float *A, int lda, 
+                    const float *B, int ldb, 
+                    float beta, float *C, int ldc);
 
 // Reference DGEMM
 void ref_dgemm(int M, int N, int K, double alpha, 
@@ -63,8 +73,18 @@ int run_test_dgemm(int M, int N, int K, size_t lambda) {
     for (int i = 0; i < M * K; i++) A[i] = (double)(i % 5);
     for (int i = 0; i < K * N; i++) B[i] = (double)(i % 3);
 
+    // Pre-set dynamic lambda in vector unit (simulating setting of lambda at beginning of test in test harness)
+    __riscv_vsetlambda(lambda);
+
     ref_dgemm(M, N, K, 1.0, A, K, B, N, 0.0, C_ref, N);
-    ozaki_dgemm(M, N, K, 1.0, A, K, B, N, 0.0, C_ozaki, N, lambda);
+    
+    if (lambda == 8) {
+        printf("  Testing ozaki_dgemm_l8...\n");
+        ozaki_dgemm_l8(M, N, K, 1.0, A, K, B, N, 0.0, C_ozaki, N);
+    } else {
+        printf("  Testing ozaki_dgemm (dynamic)...\n");
+        ozaki_dgemm(M, N, K, 1.0, A, K, B, N, 0.0, C_ozaki, N);
+    }
 
     int errors = 0;
     for (int i = 0; i < M * N; i++) {
@@ -98,8 +118,18 @@ int run_test_sgemm(int M, int N, int K, size_t lambda) {
     for (int i = 0; i < M * K; i++) A[i] = (float)(i % 5);
     for (int i = 0; i < K * N; i++) B[i] = (float)(i % 3);
 
+    // Pre-set dynamic lambda in vector unit (simulating setting of lambda at beginning of test in test harness)
+    __riscv_vsetlambda(lambda);
+
     ref_sgemm(M, N, K, 1.0f, A, K, B, N, 0.0f, C_ref, N);
-    ozaki_sgemm(M, N, K, 1.0f, A, K, B, N, 0.0f, C_ozaki, N, lambda);
+
+    if (lambda == 8) {
+        printf("  Testing ozaki_sgemm_l8...\n");
+        ozaki_sgemm_l8(M, N, K, 1.0f, A, K, B, N, 0.0f, C_ozaki, N);
+    } else {
+        printf("  Testing ozaki_sgemm (dynamic)...\n");
+        ozaki_sgemm(M, N, K, 1.0f, A, K, B, N, 0.0f, C_ozaki, N);
+    }
 
     int errors = 0;
     for (int i = 0; i < M * N; i++) {

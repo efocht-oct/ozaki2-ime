@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU and Docker
+      uses: docker/setup-qemu-action@v3
+
+    - name: Clone rv-toolchain-wrapper
+      run: |
+        mkdir -p $HOME/Projects/IME/SDK
+        git clone https://github.com/efocht-oct/rv-toolchain-wrapper.git $HOME/Projects/IME/SDK/rv-toolchain-wrapper
+
+    - name: Pull SDK Docker image
+      run: |
+        docker pull ghcr.io/efocht-oct/openchip/sdk:2026.05.28
+
+    - name: Build and run test suite
+      run: |
+        export RV_CONTAINER_IMAGE=ghcr.io/efocht-oct/openchip/sdk:2026.05.28
+        export PATH=$HOME/Projects/IME/SDK/rv-toolchain-wrapper/bin:$PATH
+        make clean
+        make all
+        make test

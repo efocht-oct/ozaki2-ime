@@ -1,0 +1,21 @@
+# Compiled artifacts
+build/
+bin/
+*.o
+*.out
+*.exe
+
+# Temporary test binaries
+test_vlen
+test_vmtl
+test_mac
+test_mac_nola
+test_u54
+test_intrinsic
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo

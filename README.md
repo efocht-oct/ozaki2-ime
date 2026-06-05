@@ -1,15 +1,16 @@
 # Ozaki-2 Scheme with RISC-V Integrated Matrix Extension (IME)
 
-[![CI](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg)](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml)
+[![CI MOCK_IME](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-mock-ime.yml/badge.svg)](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-mock-ime.yml)
+[![CI Real IME](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-real-ime.yml/badge.svg)](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-real-ime.yml)
 
 ## CI Test Results
 
-| Test Configuration | Status |
-|---|---|
-| Default (VLEN=16384, λ=8) | ![Default](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
-| VLEN=512, λ=2 | ![VLEN=512](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
-| VLEN=4096, λ=4 | ![VLEN=4096](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
-| VLEN=16384, λ=8 (explicit) | ![VLEN=16384](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci.yml/badge.svg?branch=main&event=push) |
+| Test Configuration | MOCK_IME | Real IME |
+|---|---|---|
+| Default (VLEN=16384, λ=8) | ![MOCK_IME Default](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-mock-ime.yml/badge.svg?branch=main&event=push) | ![Real IME Default](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-real-ime.yml/badge.svg?branch=main&event=push) |
+| VLEN=512, λ=2 | ![MOCK_IME VLEN=512](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-mock-ime.yml/badge.svg?branch=main&event=push) | ![Real IME VLEN=512](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-real-ime.yml/badge.svg?branch=main&event=push) |
+| VLEN=4096, λ=4 | ![MOCK_IME VLEN=4096](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-mock-ime.yml/badge.svg?branch=main&event=push) | ![Real IME VLEN=4096](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-real-ime.yml/badge.svg?branch=main&event=push) |
+| VLEN=16384, λ=8 (explicit) | ![MOCK_IME VLEN=16384](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-mock-ime.yml/badge.svg?branch=main&event=push) | ![Real IME VLEN=16384](https://github.com/efocht-oct/ozaki2-ime/actions/workflows/ci-real-ime.yml/badge.svg?branch=main&event=push) |
 
 *Results updated on each push to main. See [GitHub Actions](https://github.com/efocht-oct/ozaki2-ime/actions) for detailed logs.*
 
@@ -51,7 +52,8 @@ Key IME features used:
 │   └── test_ozaki.c   # Test harness with CSR lambda configuration and VLEN testing
 └── .github/
     └── workflows/
-        └── ci.yml     # GitHub Actions CI using rv-toolchain-wrapper
+    ├── ci-mock-ime.yml # MOCK_IME GitHub Actions CI
+    └── ci-real-ime.yml # Real IME GitHub Actions CI
 ```
 
 ## Prerequisites
@@ -77,7 +79,8 @@ make clean
 make all
 
 # 4. Run the test suite (validates multiple VLEN and lambda configurations)
-make test
+make test MOCK_IME=1  # software mock IME path
+make test MOCK_IME=0  # real Zvvm instruction path
 ```
 
 ## Configuration Parameters

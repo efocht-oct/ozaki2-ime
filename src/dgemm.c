@@ -7,25 +7,30 @@
 #include <riscv_vector.h>
 #include "ozaki_common.h"
 
+typedef int8_t ozaki_mod_t;
+
 /**
  * Inner Zvvm Kernel: Computes a single tile of C modulo m_t
  * Uses modern IME intrinsics with configurable lambda and dynamic geometry.
  */
 #ifdef MOCK_IME
 static inline void zvvm_kernel_int8_mac(
-    int32_t* C_tile, const uint8_t* A_mod, const int8_t* B_mod, 
+    int32_t* C_tile, const ozaki_mod_t* A_mod, const ozaki_mod_t* B_mod,
     int K, int lda, int ldb, size_t requested_vl, size_t lambda,
-    size_t M_TILE, size_t K_EFF, size_t MAX_N_TILE) 
+    size_t M_TILE, size_t K_EFF, size_t MAX_N_TILE,
+    size_t A_PANEL_STRIDE, size_t B_PANEL_STRIDE)
 {
     (void)requested_vl;
     (void)lambda;
     (void)K_EFF;
+    (void)A_PANEL_STRIDE;
+    (void)B_PANEL_STRIDE;
     memset(C_tile, 0, M_TILE * MAX_N_TILE * sizeof(int32_t));
     for (int ii = 0; ii < (int)M_TILE; ii++) {
         for (int jj = 0; jj < (int)MAX_N_TILE; jj++) {
             int32_t acc = 0;
             for (int k = 0; k < K; k++) {
-                uint8_t a = A_mod[ii * lda + k];
+                int8_t a = A_mod[ii * lda + k];
                 int8_t b = B_mod[jj * ldb + k]; // B_mod column-major: B_mod[j*K + k] = B[k][j]
                 acc += (int32_t)a * (int32_t)b;
             }
@@ -34,37 +39,104 @@ static inline void zvvm_kernel_int8_mac(
     }
 }
 #else
+#define DEFINE_ZVVM_KERNEL(CSUFFIX, ISUFFIX, CVTYPE, IVTYPE, CVSETVL, IVSETVL, VMV, VQWMMACC, VMTS) \
+static inline void zvvm_kernel_int8_mac_##CSUFFIX##_##ISUFFIX( \
+    int32_t* C_tile, const ozaki_mod_t* A_mod, const ozaki_mod_t* B_mod, \
+    int K, int lda, int ldb, size_t requested_vl, size_t lambda, \
+    size_t M_TILE, size_t K_EFF, size_t N_TILE, size_t C_LD, \
+    size_t A_PANEL_STRIDE, size_t B_PANEL_STRIDE) \
+{ \
+    size_t vl = CVSETVL(requested_vl); \
+    __riscv_vsetlambda(lambda); \
+    CVTYPE acc = VMV(0, vl); \
+    for (size_t k0 = 0, panel = 0; k0 < (size_t)K; k0 += K_EFF, panel++) { \
+        size_t vl_a = IVSETVL(M_TILE * K_EFF); \
+        __riscv_vsetlambda(lambda); \
+        IVTYPE va = __riscv_vmtl_v_i8##ISUFFIX(A_mod + panel * A_PANEL_STRIDE, lda, vl_a); \
+        size_t vl_b = IVSETVL(N_TILE * K_EFF); \
+        __riscv_vsetlambda(lambda); \
+        IVTYPE vb = __riscv_vmtl_v_i8##ISUFFIX(B_mod + panel * B_PANEL_STRIDE, ldb, vl_b); \
+        __riscv_vsetlambda(lambda); \
+        acc = VQWMMACC(acc, va, vb, vl); \
+    } \
+    VMTS(C_tile, C_LD, acc, vl); \
+}
+
+DEFINE_ZVVM_KERNEL(m1, m1, vint32m1_t, vint8m1_t, __riscv_vsetvl_e32m1, __riscv_vsetvl_e8m1, __riscv_vmv_v_x_i32m1, __riscv_vqwmmacc_vv_i32m1, __riscv_vmts_v_i32m1)
+DEFINE_ZVVM_KERNEL(m1, m2, vint32m1_t, vint8m2_t, __riscv_vsetvl_e32m1, __riscv_vsetvl_e8m2, __riscv_vmv_v_x_i32m1, __riscv_vqwmmacc_vv_i32m1_lm2, __riscv_vmts_v_i32m1)
+DEFINE_ZVVM_KERNEL(m1, m4, vint32m1_t, vint8m4_t, __riscv_vsetvl_e32m1, __riscv_vsetvl_e8m4, __riscv_vmv_v_x_i32m1, __riscv_vqwmmacc_vv_i32m1_lm4, __riscv_vmts_v_i32m1)
+DEFINE_ZVVM_KERNEL(m1, m8, vint32m1_t, vint8m8_t, __riscv_vsetvl_e32m1, __riscv_vsetvl_e8m8, __riscv_vmv_v_x_i32m1, __riscv_vqwmmacc_vv_i32m1_lm8, __riscv_vmts_v_i32m1)
+DEFINE_ZVVM_KERNEL(m2, m1, vint32m2_t, vint8m1_t, __riscv_vsetvl_e32m2, __riscv_vsetvl_e8m1, __riscv_vmv_v_x_i32m2, __riscv_vqwmmacc_vv_i32m2, __riscv_vmts_v_i32m2)
+DEFINE_ZVVM_KERNEL(m2, m2, vint32m2_t, vint8m2_t, __riscv_vsetvl_e32m2, __riscv_vsetvl_e8m2, __riscv_vmv_v_x_i32m2, __riscv_vqwmmacc_vv_i32m2_lm2, __riscv_vmts_v_i32m2)
+DEFINE_ZVVM_KERNEL(m2, m4, vint32m2_t, vint8m4_t, __riscv_vsetvl_e32m2, __riscv_vsetvl_e8m4, __riscv_vmv_v_x_i32m2, __riscv_vqwmmacc_vv_i32m2_lm4, __riscv_vmts_v_i32m2)
+DEFINE_ZVVM_KERNEL(m2, m8, vint32m2_t, vint8m8_t, __riscv_vsetvl_e32m2, __riscv_vsetvl_e8m8, __riscv_vmv_v_x_i32m2, __riscv_vqwmmacc_vv_i32m2_lm8, __riscv_vmts_v_i32m2)
+DEFINE_ZVVM_KERNEL(m4, m1, vint32m4_t, vint8m1_t, __riscv_vsetvl_e32m4, __riscv_vsetvl_e8m1, __riscv_vmv_v_x_i32m4, __riscv_vqwmmacc_vv_i32m4, __riscv_vmts_v_i32m4)
+DEFINE_ZVVM_KERNEL(m4, m2, vint32m4_t, vint8m2_t, __riscv_vsetvl_e32m4, __riscv_vsetvl_e8m2, __riscv_vmv_v_x_i32m4, __riscv_vqwmmacc_vv_i32m4_lm2, __riscv_vmts_v_i32m4)
+DEFINE_ZVVM_KERNEL(m4, m4, vint32m4_t, vint8m4_t, __riscv_vsetvl_e32m4, __riscv_vsetvl_e8m4, __riscv_vmv_v_x_i32m4, __riscv_vqwmmacc_vv_i32m4_lm4, __riscv_vmts_v_i32m4)
+DEFINE_ZVVM_KERNEL(m4, m8, vint32m4_t, vint8m8_t, __riscv_vsetvl_e32m4, __riscv_vsetvl_e8m8, __riscv_vmv_v_x_i32m4, __riscv_vqwmmacc_vv_i32m4_lm8, __riscv_vmts_v_i32m4)
+DEFINE_ZVVM_KERNEL(m8, m1, vint32m8_t, vint8m1_t, __riscv_vsetvl_e32m8, __riscv_vsetvl_e8m1, __riscv_vmv_v_x_i32m8, __riscv_vqwmmacc_vv_i32m8, __riscv_vmts_v_i32m8)
+DEFINE_ZVVM_KERNEL(m8, m2, vint32m8_t, vint8m2_t, __riscv_vsetvl_e32m8, __riscv_vsetvl_e8m2, __riscv_vmv_v_x_i32m8, __riscv_vqwmmacc_vv_i32m8_lm2, __riscv_vmts_v_i32m8)
+DEFINE_ZVVM_KERNEL(m8, m4, vint32m8_t, vint8m4_t, __riscv_vsetvl_e32m8, __riscv_vsetvl_e8m4, __riscv_vmv_v_x_i32m8, __riscv_vqwmmacc_vv_i32m8_lm4, __riscv_vmts_v_i32m8)
+DEFINE_ZVVM_KERNEL(m8, m8, vint32m8_t, vint8m8_t, __riscv_vsetvl_e32m8, __riscv_vsetvl_e8m8, __riscv_vmv_v_x_i32m8, __riscv_vqwmmacc_vv_i32m8_lm8, __riscv_vmts_v_i32m8)
+
+#undef DEFINE_ZVVM_KERNEL
+
 static inline void zvvm_kernel_int8_mac(
-    int32_t* C_tile, const uint8_t* A_mod, const int8_t* B_mod, 
+    int32_t* C_tile, const ozaki_mod_t* A_mod, const ozaki_mod_t* B_mod,
     int K, int lda, int ldb, size_t requested_vl, size_t lambda,
-    size_t M_TILE, size_t K_EFF, size_t MAX_N_TILE) 
+    size_t M_TILE, size_t K_EFF, size_t MAX_N_TILE,
+    size_t A_PANEL_STRIDE, size_t B_PANEL_STRIDE)
 {
     (void)M_TILE;
-    // Configure vector unit for SEW=32, LMUL=2 (EMUL_C=2)
-    size_t vl = __riscv_vsetvl_e32m2(requested_vl);
-    
-    // Establish lambda (must be done after vsetvl as hardware may clamp lambda under WARL)
-    __riscv_vsetlambda(lambda);
-    
-    // Zero out the INT32 accumulator
-    vint32m2_t acc = __riscv_vmv_v_x_i32m2(0, vl);
-    
-    // Accumulate across the K dimension
-    for (int k = 0; k < K; k += K_EFF) {
-        const uint8_t* A_ptr = A_mod + k;
-        // B_mod is column-major N×K: B_mod[j*K + k]. Pointer base &B_mod[j*K] + k offset.
-        const int8_t* B_ptr = B_mod + k;
+    size_t vlmax_e32m1 = __riscv_vsetvl_e32m1(~0ULL);
+    size_t emul_c = vlmax_e32m1 / (lambda * lambda);
+    size_t input_lmul = K_EFF / (lambda * 4);
 
-        // Order-preserving load for A (row-major) and for B (column-major = B^T row-major)
-        vuint8m8_t va = __riscv_vmtl_v_u8m8(A_ptr, lda, vl);
-        vint8m8_t vb = __riscv_vmtl_v_i8m8(B_ptr, ldb, vl);
-        
-        // Quad-widening MAC: INT8 x INT8 -> INT32 Accumulator (unsigned A x signed B)
-        acc = __riscv_vqwmmacc_vv_i32m2_us_lm8(acc, va, vb, vl);
+#define DISPATCH_INPUT(CSUFFIX) \
+    switch (input_lmul) { \
+    case 1: zvvm_kernel_int8_mac_##CSUFFIX##_m1(C_tile, A_mod, B_mod, K, lda, ldb, requested_vl, lambda, M_TILE, K_EFF, MAX_N_TILE, MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    case 2: zvvm_kernel_int8_mac_##CSUFFIX##_m2(C_tile, A_mod, B_mod, K, lda, ldb, requested_vl, lambda, M_TILE, K_EFF, MAX_N_TILE, MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    case 4: zvvm_kernel_int8_mac_##CSUFFIX##_m4(C_tile, A_mod, B_mod, K, lda, ldb, requested_vl, lambda, M_TILE, K_EFF, MAX_N_TILE, MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    case 8: zvvm_kernel_int8_mac_##CSUFFIX##_m8(C_tile, A_mod, B_mod, K, lda, ldb, requested_vl, lambda, M_TILE, K_EFF, MAX_N_TILE, MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    default: memset(C_tile, 0, M_TILE * MAX_N_TILE * sizeof(int32_t)); break; \
     }
-    
-    // Store the modular cross-term to memory
-    __riscv_vmts_v_i32m2(C_tile, MAX_N_TILE, acc, vl);
+
+#define DISPATCH_M8_CHUNK(N_OFFSET, N_TILE) \
+    switch (input_lmul) { \
+    case 1: zvvm_kernel_int8_mac_m8_m1(C_tile + (N_OFFSET), A_mod, B_mod + 4 * (N_OFFSET) * ldb, K, lda, ldb, M_TILE * (N_TILE), lambda, M_TILE, K_EFF, (N_TILE), MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    case 2: zvvm_kernel_int8_mac_m8_m2(C_tile + (N_OFFSET), A_mod, B_mod + 4 * (N_OFFSET) * ldb, K, lda, ldb, M_TILE * (N_TILE), lambda, M_TILE, K_EFF, (N_TILE), MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    case 4: zvvm_kernel_int8_mac_m8_m4(C_tile + (N_OFFSET), A_mod, B_mod + 4 * (N_OFFSET) * ldb, K, lda, ldb, M_TILE * (N_TILE), lambda, M_TILE, K_EFF, (N_TILE), MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    case 8: zvvm_kernel_int8_mac_m8_m8(C_tile + (N_OFFSET), A_mod, B_mod + 4 * (N_OFFSET) * ldb, K, lda, ldb, M_TILE * (N_TILE), lambda, M_TILE, K_EFF, (N_TILE), MAX_N_TILE, A_PANEL_STRIDE, B_PANEL_STRIDE); break; \
+    default: memset(C_tile, 0, M_TILE * MAX_N_TILE * sizeof(int32_t)); break; \
+    }
+
+    switch (emul_c) {
+    case 1:
+        DISPATCH_INPUT(m1);
+        break;
+    case 2:
+        DISPATCH_INPUT(m2);
+        break;
+    case 4:
+        DISPATCH_INPUT(m4);
+        break;
+    case 8:
+        DISPATCH_INPUT(m8);
+        break;
+    default:
+        if (emul_c > 8 && (emul_c % 8) == 0) {
+            for (size_t n0 = 0; n0 < MAX_N_TILE; n0 += lambda * 8) {
+                size_t n_tile = lambda * 8;
+                if (n_tile > MAX_N_TILE - n0) n_tile = MAX_N_TILE - n0;
+                DISPATCH_M8_CHUNK(n0, n_tile);
+            }
+        } else {
+            memset(C_tile, 0, M_TILE * MAX_N_TILE * sizeof(int32_t));
+        }
+        break;
+    }
+#undef DISPATCH_INPUT
+#undef DISPATCH_M8_CHUNK
 }
 #endif
 
@@ -86,42 +158,74 @@ void ozaki_dgemm(int M, int N, int K, double alpha,
     // 2. Compute runtime configuration parameters from (VLEN, lambda, SEW=32)
     size_t M_TILE = VLEN / (32 * lambda);
     size_t K_EFF = lambda * 4;
-    size_t MAX_N_TILE = (VLEN * 2 / 32) / lambda;
+    size_t MAX_N_TILE = M_TILE;
+#ifndef MOCK_IME
+    size_t emul_c = vlmax_e32m1 / (lambda * lambda);
+    size_t max_input_lmul = emul_c < 8 ? emul_c : 8;
+    size_t input_lmul = 1;
+    while (input_lmul < max_input_lmul && K_EFF < (size_t)K) {
+        input_lmul *= 2;
+        K_EFF = lambda * 4 * input_lmul;
+    }
+    size_t input_linesize = lambda * input_lmul;
+    size_t k_panels = ((size_t)K + K_EFF - 1) / K_EFF;
+    size_t a_panel_stride = 4 * M * input_linesize;
+    size_t b_panel_stride = 4 * N * input_linesize;
+#endif
 
     if (M_TILE == 0) M_TILE = 1;
     if (MAX_N_TILE == 0) MAX_N_TILE = 1;
 
     // 3. Exponent Scaling & Modular Reduction (Software)
-    uint8_t* A_mod[NUM_MODULI];
-    int8_t* B_mod[NUM_MODULI];
+    ozaki_mod_t* A_mod[NUM_MODULI];
+    ozaki_mod_t* B_mod[NUM_MODULI];
     int32_t* C_mod[NUM_MODULI];
     for (int t = 0; t < NUM_MODULI; t++) {
-        A_mod[t] = (uint8_t*)malloc(M * K * sizeof(uint8_t));
-        B_mod[t] = (int8_t*)malloc(K * N * sizeof(int8_t));
+#ifdef MOCK_IME
+        A_mod[t] = (ozaki_mod_t*)malloc(M * K * sizeof(ozaki_mod_t));
+        B_mod[t] = (ozaki_mod_t*)malloc(K * N * sizeof(ozaki_mod_t));
+#else
+    A_mod[t] = (ozaki_mod_t*)calloc(k_panels * a_panel_stride, sizeof(ozaki_mod_t));
+    B_mod[t] = (ozaki_mod_t*)calloc(k_panels * b_panel_stride, sizeof(ozaki_mod_t));
+#endif
         C_mod[t] = (int32_t*)malloc(M_TILE * MAX_N_TILE * sizeof(int32_t));
     }
 
     // Extract maximum exponents (D and E scale factors)
     double max_A = 0.0, max_B = 0.0;
-    for (int i = 0; i < M * K; i++) max_A = fmax(max_A, fabs(A[i]));
-    for (int i = 0; i < K * N; i++) max_B = fmax(max_B, fabs(B[i]));
+    for (int i = 0; i < M; i++) {
+        for (int k = 0; k < K; k++) max_A = fmax(max_A, fabs(A[i * lda + k]));
+    }
+    for (int k = 0; k < K; k++) {
+        for (int j = 0; j < N; j++) max_B = fmax(max_B, fabs(B[k * ldb + j]));
+    }
     
     // Scale factors to map FP64 mantissas to integers
     double scale_A = (max_A == 0.0) ? 1.0 : exp2(-floor(log2(max_A)) + 52); 
     double scale_B = (max_B == 0.0) ? 1.0 : exp2(-floor(log2(max_B)) + 52);
 
     // Populate modulo matrices
-    // A_mod mapped to positive modulo [0, MODULI[t]-1] (fits in uint8_t)
-    for (int i = 0; i < M * K; i++) {
-        int64_t a_int = (int64_t)round(A[i] * scale_A);
-        for (int t = 0; t < NUM_MODULI; t++) {
-            int64_t val = a_int % MODULI[t];
-            if (val < 0) val += MODULI[t];
-            A_mod[t][i] = (uint8_t)val;
+    // A_mod mapped to centered signed modulo [-MODULI[t]/2, MODULI[t]/2) (fits in int8_t)
+    for (int i = 0; i < M; i++) {
+        for (int k = 0; k < K; k++) {
+            int64_t a_int = (int64_t)round(A[i * lda + k] * scale_A);
+            for (int t = 0; t < NUM_MODULI; t++) {
+                int64_t val = a_int % MODULI[t];
+                if (val < 0) val += MODULI[t];
+                if (val > MODULI[t] / 2) val -= MODULI[t];
+#ifdef MOCK_IME
+                A_mod[t][i * K + k] = (int8_t)val;
+#else
+                size_t panel = (size_t)k / K_EFF;
+                size_t kk = (size_t)k % K_EFF;
+                size_t tr = 4 * (size_t)i + kk / input_linesize;
+                size_t tc = kk % input_linesize;
+                A_mod[t][panel * a_panel_stride + tr * input_linesize + tc] = (int8_t)val;
+#endif
+            }
         }
     }
     // B_mod stored column-major (N×K): B_mod[j*K + k] = B[k][j]
-    // This makes B_mod a row-major B^T tile, correct for vmtl.v order-preserving load.
     for (int k = 0; k < K; k++) {
         for (int j = 0; j < N; j++) {
             int64_t b_int = (int64_t)round(B[k * ldb + j] * scale_B);
@@ -129,13 +233,21 @@ void ozaki_dgemm(int M, int N, int K, double alpha,
                 int64_t val = b_int % MODULI[t];
                 if (val < 0) val += MODULI[t];
                 if (val > MODULI[t] / 2) val -= MODULI[t];
+#ifdef MOCK_IME
                 B_mod[t][j * K + k] = (int8_t)val;
+#else
+                size_t panel = (size_t)k / K_EFF;
+                size_t kk = (size_t)k % K_EFF;
+                size_t tr = 4 * (size_t)j + kk / input_linesize;
+                size_t tc = kk % input_linesize;
+                B_mod[t][panel * b_panel_stride + tr * input_linesize + tc] = (int8_t)val;
+#endif
             }
         }
     }
 
     // 4. Tiled Matrix Multiplication (Zvvm Hardware)
-    size_t vl = MAX_N_TILE * lambda; 
+    size_t vl = M_TILE * MAX_N_TILE;
 
     for (size_t i = 0; i < (size_t)M; i += M_TILE) {
         for (size_t j = 0; j < (size_t)N; j += MAX_N_TILE) {
@@ -144,10 +256,17 @@ void ozaki_dgemm(int M, int N, int K, double alpha,
             for (int t = 0; t < NUM_MODULI; t++) {
                 zvvm_kernel_int8_mac(
                     C_mod[t],
+#ifdef MOCK_IME
                     &A_mod[t][i * K],
                     &B_mod[t][j * K],  // column-major B: column j starts at j*K
                     K, K, K, vl, lambda,  // ldb=K (leading dim of column-major N×K)
-                    M_TILE, K_EFF, MAX_N_TILE
+                    M_TILE, K_EFF, MAX_N_TILE, 0, 0
+#else
+                    &A_mod[t][4 * i * input_linesize],
+                    &B_mod[t][4 * j * input_linesize],
+                    K, (int)input_linesize, (int)input_linesize, vl, lambda,
+                    M_TILE, K_EFF, MAX_N_TILE, a_panel_stride, b_panel_stride
+#endif
                 );
             }
 

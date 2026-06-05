@@ -8,6 +8,7 @@ RV_CONTAINER_IMAGE ?= ghcr.io/efocht-oct/openchip/sdk:2026.05.28
 # Test configuration (can be overridden via environment variables)
 VLEN ?= 16384
 LAMBDA ?= 8
+MOCK_IME ?= 1
 
 # Export for rv-wrapper.py
 export RV_CONTAINER_IMAGE
@@ -21,10 +22,13 @@ QEMU = qemu-riscv64
 # Enable V extension, Zbb (bitmanip for runtime lambda), and Zvvmm (IME MAC), Zvvmtls/Zvvmttls (IME load/store)
 MARCH = rv64gcv_zbb_zvvmm_zvvmtls_zvvmttls
 MTUNE = generic
-# By default, we compile with -DMOCK_IME so that tests can be fully run and verified end-to-end
-# under QEMU emulation without hanging on unimplemented/unstable matrix instruction emulation.
-# To compile the actual, pure hardware Zvvm instruction kernel, remove -DMOCK_IME.
-CFLAGS = -O3 -march=$(MARCH) -mtune=$(MTUNE) -mabi=lp64d -Wall -Wextra -std=c11 -I$(SRC_DIR) -DMOCK_IME
+# By default, compile with MOCK_IME=1 so tests can run end-to-end under QEMU
+# without depending on real matrix instruction emulation. Use MOCK_IME=0 to
+# compile the actual Zvvm instruction kernel.
+CFLAGS = -O3 -march=$(MARCH) -mtune=$(MTUNE) -mabi=lp64d -Wall -Wextra -std=c11 -I$(SRC_DIR)
+ifeq ($(MOCK_IME),1)
+CFLAGS += -DMOCK_IME
+endif
 LDFLAGS = -static -lm
 
 # Directories
@@ -65,15 +69,15 @@ $(TARGET): $(OBJS) $(TEST_OBJS)
 	$(CC) $(CFLAGS) $(OBJS) $(TEST_OBJS) -o $@ $(LDFLAGS)
 
 test: $(TARGET)
-	@echo "Running tests with VLEN=$(VLEN) and lambda=$(LAMBDA)..."
+	@echo "Running tests with VLEN=$(VLEN), lambda=$(LAMBDA), MOCK_IME=$(MOCK_IME)..."
 	$(QEMU) $(QEMU_CPU) $(TARGET) $(LAMBDA)
 
 test-vlen: $(TARGET)
-	@echo "Running tests with VLEN=$(VLEN) and lambda=$(LAMBDA)..."
+	@echo "Running tests with VLEN=$(VLEN), lambda=$(LAMBDA), MOCK_IME=$(MOCK_IME)..."
 	$(QEMU) $(QEMU_CPU) $(TARGET) $(LAMBDA)
 
-# Run test with specific VLEN (e.g., make test-vlen VLEN=512 LAMBDA=2)
-# Run test with specific lambda (e.g., make test LAMBDA=4)
+# Run test with specific VLEN (e.g., make test-vlen VLEN=512 LAMBDA=2 MOCK_IME=0)
+# Run test with specific lambda (e.g., make test LAMBDA=4 MOCK_IME=1)
 
 clean:
 	rm -rf $(BUILD_DIR)

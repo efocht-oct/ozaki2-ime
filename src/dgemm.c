@@ -26,7 +26,7 @@ static inline void zvvm_kernel_int8_mac(
             int32_t acc = 0;
             for (int k = 0; k < K; k++) {
                 uint8_t a = A_mod[ii * lda + k];
-                int8_t b = B_mod[k * ldb + jj];
+                int8_t b = B_mod[jj * ldb + k]; // B_mod column-major: B_mod[j*K + k] = B[k][j]
                 acc += (int32_t)a * (int32_t)b;
             }
             C_tile[ii * MAX_N_TILE + jj] = acc;
@@ -52,13 +52,12 @@ static inline void zvvm_kernel_int8_mac(
     // Accumulate across the K dimension
     for (int k = 0; k < K; k += K_EFF) {
         const uint8_t* A_ptr = A_mod + k;
-        const int8_t* B_ptr = B_mod + k; // B is assumed column-major in memory layout for transposing load
-        
-        // Order-preserving load for A (Row-major) - cast to unsigned for _us intrinsic
+        // B_mod is column-major N×K: B_mod[j*K + k]. Pointer base &B_mod[j*K] + k offset.
+        const int8_t* B_ptr = B_mod + k;
+
+        // Order-preserving load for A (row-major) and for B (column-major = B^T row-major)
         vuint8m8_t va = __riscv_vmtl_v_u8m8(A_ptr, lda, vl);
-        
-        // Transposing load for B (Column-major to row-major)
-        vint8m8_t vb = __riscv_vmttl_v_i8m8(B_ptr, ldb, vl);
+        vint8m8_t vb = __riscv_vmtl_v_i8m8(B_ptr, ldb, vl);
         
         // Quad-widening MAC: INT8 x INT8 -> INT32 Accumulator (unsigned A x signed B)
         acc = __riscv_vqwmmacc_vv_i32m2_us_lm8(acc, va, vb, vl);
@@ -121,14 +120,17 @@ void ozaki_dgemm(int M, int N, int K, double alpha,
             A_mod[t][i] = (uint8_t)val;
         }
     }
-    // B_mod mapped to symmetric modulo [-MODULI[t]/2, MODULI[t]/2] (fits in int8_t)
-    for (int i = 0; i < K * N; i++) {
-        int64_t b_int = (int64_t)round(B[i] * scale_B);
-        for (int t = 0; t < NUM_MODULI; t++) {
-            int64_t val = b_int % MODULI[t];
-            if (val < 0) val += MODULI[t];
-            if (val > MODULI[t] / 2) val -= MODULI[t];
-            B_mod[t][i] = (int8_t)val;
+    // B_mod stored column-major (N×K): B_mod[j*K + k] = B[k][j]
+    // This makes B_mod a row-major B^T tile, correct for vmtl.v order-preserving load.
+    for (int k = 0; k < K; k++) {
+        for (int j = 0; j < N; j++) {
+            int64_t b_int = (int64_t)round(B[k * ldb + j] * scale_B);
+            for (int t = 0; t < NUM_MODULI; t++) {
+                int64_t val = b_int % MODULI[t];
+                if (val < 0) val += MODULI[t];
+                if (val > MODULI[t] / 2) val -= MODULI[t];
+                B_mod[t][j * K + k] = (int8_t)val;
+            }
         }
     }
 
@@ -141,10 +143,10 @@ void ozaki_dgemm(int M, int N, int K, double alpha,
             // Compute this tile for all moduli
             for (int t = 0; t < NUM_MODULI; t++) {
                 zvvm_kernel_int8_mac(
-                    C_mod[t], 
-                    &A_mod[t][i * K], 
-                    &B_mod[t][j],
-                    K, K, N, vl, lambda,
+                    C_mod[t],
+                    &A_mod[t][i * K],
+                    &B_mod[t][j * K],  // column-major B: column j starts at j*K
+                    K, K, K, vl, lambda,  // ldb=K (leading dim of column-major N×K)
                     M_TILE, K_EFF, MAX_N_TILE
                 );
             }

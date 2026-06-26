@@ -91,6 +91,22 @@ The test suite explicitly configures the IME hardware via the `vtype` CSR before
 
 This configuration yields an effective K-dimension of `K_eff = λ × W × LMUL = 8 × 4 × 1 = 32` for quad-widening (INT8) operations, perfectly matching the Ozaki-2 tile geometry.
 
+## Implementation Plan / IME Coverage Roadmap
+
+The current Ozaki-2 kernels exercise the row-major A / row-major B path needed by the test suite, with B brought into the multiplier layout through transposing loads. The planned extension is to make the tile-movement and integer-matrix-MAC coverage systematic across the IME integer surface.
+
+| Area | Instructions / variants | Plan |
+|---|---|---|
+| Transposing tile load coverage | `vmttl.v` | Add focused tests for row-major B tiles and column-major A/C tiles. Validate the spec address mapping `M[base + (SEW/8) * ((i % (λ×LMUL)) * LD + i/(λ×LMUL))]`, including `_L{N}` immediate-lambda and masked `_m` forms where supported by the toolchain. |
+| Transposing tile store coverage | `vmtts.v` | Add round-trip tests `memory → vmttl.v → vmtts.v → memory` for integer element widths 8/16/32/64 and for column-major C stores. Verify tails, masks, and leading-dimension behavior against a scalar reference. |
+| Existing Ozaki INT8 path | `vqmmacc.vv` / `vqwmmacc.vv` family, W=4 | Keep the current unsigned-A × signed-B `INT8×INT8→INT32` path as the production Ozaki DGEMM/SGEMM path. Expand tests to include signed/signed, unsigned/unsigned, `_su`, and `_us` suffix variants where intrinsics are available. |
+| Non-widening integer matrix MAC | `vmmacc.vv`, W=1 | Add standalone microtests for `INT{8,16,32,64}×INT{8,16,32,64}→same-width` modular accumulation. Check modulo-`2^SEW` wraparound and `vstart=0` illegal-instruction precondition behavior separately from Ozaki reconstruction. |
+| 2× widening integer matrix MAC | `vwmmacc.vv`, W=2 | Add `INT8→INT16`, `INT16→INT32`, and `INT32→INT64` microtests. Compute geometry from `K_eff = λ × 2 × LMUL`, with accumulator `SEW` and packed/narrow input element width `SEW/2`. Cover signed, unsigned, `_su`, and `_us`. |
+| 4× widening integer matrix MAC | `vqmmacc.vv`, W=4 | Add `INT8→INT32`, `INT16→INT64`, and available `INT4→INT16` tests. Compute geometry from `K_eff = λ × 4 × LMUL`; verify Ozaki kernels continue to use dynamic `VLEN`, detected λ, and accumulator `SEW=32`. |
+| 8× widening integer matrix MAC | `v8wmmacc.vv`, W=8 | Add coverage for available `INT4→INT32` and `INT8→INT64` extension combinations. Compute geometry from `K_eff = λ × 8 × LMUL`; include packed Int4 data-generation and scalar reference unpacking. |
+| Geometry matrix | All integer MAC widths | For every supported `(W, SEW, LMUL, λ, VLEN)` combination, derive `M_tile = VLEN/(SEW×λ)`, `N_tile = VL/(λ×LMUL)`, and `K_eff = λ×W×LMUL` in the tests rather than hardcoding tile sizes. |
+| CI coverage | Mock and real-IME workflows | Keep the existing VLEN/λ matrix and add small, deterministic instruction microtests that run quickly before the larger Ozaki tests. Gate hardware-only instruction tests behind `MOCK_IME=0`; keep scalar mocks for arithmetic/reference coverage. |
+
 ## Expected DGEMM and SGEMM Performance
 
 The DGEMM and SGEMM kernels in this repository are expected to track the sustained integer matrix-matrix performance of the IME unit, scaled by the number of modular products required by the Ozaki reconstruction. In the current implementation, both kernels use `NUM_MODULI = 15` coprime moduli near 256, and each modulus requires one complete INT8 × INT8 → INT32 matrix multiplication over the same `M × N × K` problem.

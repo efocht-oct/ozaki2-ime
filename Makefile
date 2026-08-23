@@ -17,6 +17,7 @@ export PATH := $(RV_WRAPPER_BIN):$(PATH)
 # Compiler and tools
 CC = riscv64-openchip-linux-gnu-gcc
 QEMU = qemu-riscv64
+HOSTCC ?= cc
 
 # Architecture flags for IME (Zvvm)
 # Enable V extension, Zbb (bitmanip for runtime lambda), and Zvvmm (IME MAC), Zvvmtls/Zvvmttls (IME load/store)
@@ -52,7 +53,7 @@ TARGET = $(BUILD_DIR)/test_ozaki
 # IME features are enabled via custom feature flags
 QEMU_CPU = -cpu rv64,v=true,vlen=$(VLEN),x-zvvm=true,x-zvfofp8min=true,x-zvfbfa=true,x-zvvfmmbf16=true,zvfh=true,zfbfmin=true
 
-.PHONY: all clean test test-vlen test-lambda
+.PHONY: all clean test test-moduli test-vlen test-lambda
 
 all: $(TARGET)
 
@@ -71,6 +72,10 @@ $(TARGET): $(OBJS) $(TEST_OBJS)
 test: $(TARGET)
 	@echo "Running tests with VLEN=$(VLEN), lambda=$(LAMBDA), MOCK_IME=$(MOCK_IME)..."
 	$(QEMU) $(QEMU_CPU) $(TARGET) $(LAMBDA)
+
+test-moduli: tests/test_moduli.c src/ozaki_common.c src/ozaki_common.h | $(BUILD_DIR)
+	$(HOSTCC) -std=c11 -Wall -Wextra -I$(SRC_DIR) tests/test_moduli.c src/ozaki_common.c -o $(BUILD_DIR)/test_moduli
+	$(BUILD_DIR)/test_moduli
 
 test-vlen: $(TARGET)
 	@echo "Running tests with VLEN=$(VLEN), lambda=$(LAMBDA), MOCK_IME=$(MOCK_IME)..."

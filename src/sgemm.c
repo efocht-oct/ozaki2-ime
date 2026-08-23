@@ -176,10 +176,10 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
     if (MAX_N_TILE == 0) MAX_N_TILE = 1;
 
     // 3. Exponent Scaling & Modular Reduction (Software)
-    ozaki_mod_t* A_mod[NUM_MODULI];
-    ozaki_mod_t* B_mod[NUM_MODULI];
-    int32_t* C_mod[NUM_MODULI];
-    for (int t = 0; t < NUM_MODULI; t++) {
+    ozaki_mod_t* A_mod[FP32_NUM_MODULI];
+    ozaki_mod_t* B_mod[FP32_NUM_MODULI];
+    int32_t* C_mod[FP32_NUM_MODULI];
+    for (int t = 0; t < FP32_NUM_MODULI; t++) {
 #ifdef MOCK_IME
         A_mod[t] = (ozaki_mod_t*)malloc(M * K * sizeof(ozaki_mod_t));
         B_mod[t] = (ozaki_mod_t*)malloc(K * N * sizeof(ozaki_mod_t));
@@ -204,14 +204,14 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
     float scale_B = (max_B == 0.0f) ? 1.0f : exp2f(-floorf(log2f(max_B)) + 23);
 
     // Populate modulo matrices
-    // A_mod mapped to centered signed modulo [-MODULI[t]/2, MODULI[t]/2) (fits in int8_t)
+    // A_mod mapped to centered signed modulo [-MODULI_FP32[t]/2, MODULI_FP32[t]/2) (fits in int8_t)
     for (int i = 0; i < M; i++) {
         for (int k = 0; k < K; k++) {
             int64_t a_int = (int64_t)roundf(A[i * lda + k] * scale_A);
-            for (int t = 0; t < NUM_MODULI; t++) {
-                int64_t val = a_int % MODULI[t];
-                if (val < 0) val += MODULI[t];
-                if (val > MODULI[t] / 2) val -= MODULI[t];
+            for (int t = 0; t < FP32_NUM_MODULI; t++) {
+                int64_t val = a_int % MODULI_FP32[t];
+                if (val < 0) val += MODULI_FP32[t];
+                if (val > MODULI_FP32[t] / 2) val -= MODULI_FP32[t];
 #ifdef MOCK_IME
                 A_mod[t][i * K + k] = (int8_t)val;
 #else
@@ -228,10 +228,10 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
     for (int k = 0; k < K; k++) {
         for (int j = 0; j < N; j++) {
             int64_t b_int = (int64_t)roundf(B[k * ldb + j] * scale_B);
-            for (int t = 0; t < NUM_MODULI; t++) {
-                int64_t val = b_int % MODULI[t];
-                if (val < 0) val += MODULI[t];
-                if (val > MODULI[t] / 2) val -= MODULI[t];
+            for (int t = 0; t < FP32_NUM_MODULI; t++) {
+                int64_t val = b_int % MODULI_FP32[t];
+                if (val < 0) val += MODULI_FP32[t];
+                if (val > MODULI_FP32[t] / 2) val -= MODULI_FP32[t];
 #ifdef MOCK_IME
                 B_mod[t][j * K + k] = (int8_t)val;
 #else
@@ -252,7 +252,7 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
         for (size_t j = 0; j < (size_t)N; j += MAX_N_TILE) {
             
             // Compute this tile for all moduli
-            for (int t = 0; t < NUM_MODULI; t++) {
+            for (int t = 0; t < FP32_NUM_MODULI; t++) {
                 zvvm_kernel_int8_mac(
                     C_mod[t],
 #ifdef MOCK_IME
@@ -273,22 +273,22 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
             for (size_t ii = 0; ii < M_TILE && (i + ii) < (size_t)M; ii++) {
                 for (size_t jj = 0; jj < MAX_N_TILE && (j + jj) < (size_t)N; jj++) {
                     unsigned __int128 exact_int_C_u = 0;
-                    unsigned __int128 uCRT_M = (unsigned __int128)CRT_M;
+                    unsigned __int128 uCRT_M_FP32 = (unsigned __int128)CRT_M_FP32;
 
                     // Reconstruct exact integer using Chinese Remainder Theorem
-                    for (int t = 0; t < NUM_MODULI; t++) {
+                    for (int t = 0; t < FP32_NUM_MODULI; t++) {
                         int32_t val = C_mod[t][ii * MAX_N_TILE + jj];
-                        val %= MODULI[t];
-                        if (val < 0) val += MODULI[t]; 
+                        val %= MODULI_FP32[t];
+                        if (val < 0) val += MODULI_FP32[t];
                         
-                        unsigned __int128 term = mult_mod((unsigned __int128)CRT_M_t_y_t[t], (uint32_t)val, uCRT_M);
-                        exact_int_C_u = (exact_int_C_u + term) % uCRT_M;
+                        unsigned __int128 term = mult_mod((unsigned __int128)CRT_M_T_Y_T_FP32[t], (uint32_t)val, uCRT_M_FP32);
+                        exact_int_C_u = (exact_int_C_u + term) % uCRT_M_FP32;
                     }
                     
                     __int128_t exact_int_C = (__int128_t)exact_int_C_u;
                     // Adjust for negative reconstructed values
-                    if (exact_int_C > CRT_M / 2) {
-                        exact_int_C -= CRT_M;
+                    if (exact_int_C > (__int128_t)(uCRT_M_FP32 / 2)) {
+                        exact_int_C -= uCRT_M_FP32;
                     }
 
                     // Convert to FP32, apply inverse scaling, and accumulate
@@ -307,7 +307,7 @@ void ozaki_sgemm(int M, int N, int K, float alpha,
     }
 
     // Cleanup
-    for (int t = 0; t < NUM_MODULI; t++) {
+    for (int t = 0; t < FP32_NUM_MODULI; t++) {
         free(A_mod[t]);
         free(B_mod[t]);
         free(C_mod[t]);

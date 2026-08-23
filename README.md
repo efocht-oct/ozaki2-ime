@@ -109,7 +109,7 @@ The current Ozaki-2 kernels exercise the row-major A / row-major B path needed b
 
 ## Expected DGEMM and SGEMM Performance
 
-The DGEMM and SGEMM kernels in this repository are expected to track the sustained integer matrix-matrix performance of the IME unit, scaled by the number of modular products required by the Ozaki reconstruction. In the current implementation, both kernels use `NUM_MODULI = 15` coprime moduli near 256, and each modulus requires one complete INT8 × INT8 → INT32 matrix multiplication over the same `M × N × K` problem.
+The DGEMM and SGEMM kernels in this repository are expected to track the sustained integer matrix-matrix performance of the IME unit, scaled by the number of modular products required by the Ozaki reconstruction. DGEMM uses 15 coprime moduli near 256, while SGEMM uses an independent 7-modulus basis; each modulus requires one complete INT8 × INT8 → INT32 matrix multiplication over the same `M × N × K` problem.
 
 For a conventional GEMM, the useful floating-point work is counted as:
 
@@ -120,31 +120,36 @@ FP work = 2 × M × N × K floating-point operations
 where one multiply-add contributes two FLOPs. The Ozaki-IME path performs the same logical `M × N × K` multiply-adds once per modulus in integer arithmetic:
 
 ```text
-Integer work = NUM_MODULI × M × N × K INT8 MACs
-             = 15 × M × N × K INT8 MACs
+Integer work = modulus_count × M × N × K INT8 MACs
+             = 15 × M × N × K for DGEMM
+             =  7 × M × N × K for SGEMM
 ```
 
 Equivalently, a single IME tile for the configured geometry computes a `64 × 64` output tile over `K_eff = 32`, or:
 
 ```text
 64 × 64 × 32 = 131,072 INT8 MACs per modulus
-15 × 131,072 = 1,966,080 INT8 MACs per Ozaki tile result
+15 × 131,072 = 1,966,080 INT8 MACs per DGEMM tile result
+ 7 × 131,072 =   917,504 INT8 MACs per SGEMM tile result
 ```
 
-If the sustained IME throughput is `P_int8_mac` INT8 MAC/s, the ideal large-matrix upper bound for both Ozaki DGEMM and Ozaki SGEMM is therefore:
+If the sustained IME throughput is `P_int8_mac` INT8 MAC/s, the ideal large-matrix upper bounds are:
 
 ```text
-Expected FP MAC/s  ≈ P_int8_mac / 15
-Expected FLOP/s    ≈ 2 × P_int8_mac / 15
+Expected DGEMM FP MAC/s ≈ P_int8_mac / 15
+Expected SGEMM FP MAC/s ≈ P_int8_mac / 7
+Expected DGEMM FLOP/s   ≈ 2 × P_int8_mac / 15
+Expected SGEMM FLOP/s   ≈ 2 × P_int8_mac / 7
 ```
 
 If the IME performance number is reported as integer operations per second with one MAC counted as two integer operations, the equivalent estimate is:
 
 ```text
-Expected GEMM FLOP/s ≈ P_int8_ops / 15
+Expected DGEMM FLOP/s ≈ P_int8_ops / 15
+Expected SGEMM FLOP/s ≈ P_int8_ops / 7
 ```
 
-The estimate is identical for DGEMM and SGEMM in this code because both paths currently use the same 15-modulus CRT configuration and the same INT8 IME kernel. SGEMM can theoretically require fewer moduli than DGEMM because FP32 has a shorter significand, but this implementation keeps the same modular basis for both precisions to share the reconstruction path and provide a wide exact integer range.
+The estimates differ because DGEMM retains the 15-modulus CRT configuration while SGEMM uses the independent 7-modulus basis. Both paths retain the same signed INT8 IME arithmetic and reconstruction structure.
 
 These formulas are compute-bound estimates. Real measured performance will be lower when matrix sizes are small or when non-IME work is significant, including exponent scanning, scaling, modular reduction of `A` and `B`, memory allocation and packing, CRT reconstruction, inverse scaling, and the final `alpha`/`beta` update. These overheads are mostly proportional to `M × K`, `K × N`, or `M × N`; the IME multiplication term is proportional to `M × N × K`, so the estimate becomes more accurate for large, well-tiled matrices with sufficiently large `K`.
 

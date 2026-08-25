@@ -20,8 +20,8 @@ QEMU = qemu-riscv64
 HOSTCC ?= cc
 
 # Architecture flags for IME (Zvvm)
-# Enable V extension, Zbb (bitmanip for runtime lambda), and Zvvmm (IME MAC), Zvvmtls/Zvvmttls (IME load/store)
-MARCH = rv64gcv_zbb_zvvmm_zvvmtls_zvvmttls
+# Enable V extension, Zbb, integer/FP matrix MAC, and tile load/store extensions
+MARCH = rv64gcv_zbb_zvvmm_zvvfmm_zvvmtls_zvvmttls
 MTUNE = generic
 # By default, compile with MOCK_IME=1 so tests can run end-to-end under QEMU
 # without depending on real matrix instruction emulation. Use MOCK_IME=0 to
@@ -85,4 +85,4 @@ test-vlen: $(TARGET)
 # Run test with specific lambda (e.g., make test LAMBDA=4 MOCK_IME=1)
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) probe.c

@@ -21,7 +21,7 @@ This repository contains an implementation of the **Ozaki-2 scheme** for high-pr
 The Ozaki scheme is an error-free transformation technique for floating-point matrix multiplication. It allows exact computation of floating-point matrix products by:
 1. **Scaling**: Extracting the maximum exponent of the input matrices and scaling the mantissas to integers.
 2. **Modular Reduction**: Reducing the scaled integers modulo a set of pre-selected coprime moduli (e.g., near 256).
-3. **Integer Matrix Multiplication**: Performing the matrix multiplication using high-throughput integer matrix-matrix multiplication (INT8 × INT8 → INT32) via hardware accelerators.
+3. **FP8 Matrix Multiplication**: Splitting each modular residue into two exact E4M3 digit operands and using FP8 matrix multiply-accumulate; four digit products reconstruct the integer dot product exactly.
 4. **CRT Reconstruction**: Reconstructing the exact integer result using the Chinese Remainder Theorem (CRT).
 5. **Inverse Scaling**: Converting the exact integer back to floating-point and applying the inverse scale factor.
 
@@ -33,7 +33,7 @@ The implementation utilizes the RISC-V Zvvm family of Integrated Matrix extensio
 
 Key IME features used:
 - **Tile Geometry**: Configured via the `lambda` (λ) field in the `vtype` CSR.
-- **Widening MAC**: `vqmmacc.vv` (quad-widening: INT8 × INT8 → INT32) and `v8wmmacc.vv` (8×-widening: INT4 × INT4 → INT32).
+- **FP8 Matrix MAC**: `vfqwmmacc.vv` with E4M3 inputs and FP32 accumulation; each residue is split into two exact FP8 digits, so four FP8 products reproduce one integer residue product.
 - **2D Tile Loads/Stores**: `vmtl.v` (order-preserving load), `vmttl.v` (transposing load for column-major data), and `vmts.v` (order-preserving store).
 
 ## Project Structure
@@ -89,17 +89,17 @@ The test suite explicitly configures the IME hardware via the `vtype` CSR before
 - **VLEN**: 16384
 - **Lambda (λ)**: 8
 
-This configuration yields an effective K-dimension of `K_eff = λ × W × LMUL = 8 × 4 × 1 = 32` for quad-widening (INT8) operations, perfectly matching the Ozaki-2 tile geometry.
+This configuration yields an effective K-dimension of `K_eff = λ × W × LMUL = 8 × 4 × 1 = 32` for FP8 E4M3 → FP32 quad-widening operations, matching the Ozaki-2 tile geometry.
 
 ## Implementation Plan / IME Coverage Roadmap
 
-The current Ozaki-2 kernels exercise the row-major A / row-major B path needed by the test suite, with B brought into the multiplier layout through transposing loads. The planned extension is to make the tile-movement and integer-matrix-MAC coverage systematic across the IME integer surface.
+The current Ozaki-2 kernels exercise the row-major A / row-major B path needed by the test suite, with B brought into the multiplier layout through transposing loads. The production arithmetic path uses E4M3 FP8 digit operands and FP32 accumulation through `vfqwmmacc.vv`; the integer-matrix rows below describe separate IME coverage work.
 
 | Area | Instructions / variants | Plan |
 |---|---|---|
 | Transposing tile load coverage | `vmttl.v` | Add focused tests for row-major B tiles and column-major A/C tiles. Validate the spec address mapping `M[base + (SEW/8) * ((i % (λ×LMUL)) * LD + i/(λ×LMUL))]`, including `_L{N}` immediate-lambda and masked `_m` forms where supported by the toolchain. |
 | Transposing tile store coverage | `vmtts.v` | Add round-trip tests `memory → vmttl.v → vmtts.v → memory` for integer element widths 8/16/32/64 and for column-major C stores. Verify tails, masks, and leading-dimension behavior against a scalar reference. |
-| Existing Ozaki INT8 path | `vqmmacc.vv` / `vqwmmacc.vv` family, W=4 | Keep the current unsigned-A × signed-B `INT8×INT8→INT32` path as the production Ozaki DGEMM/SGEMM path. Expand tests to include signed/signed, unsigned/unsigned, `_su`, and `_us` suffix variants where intrinsics are available. |
+| Existing Ozaki FP8 path | `vfqwmmacc.vv`, W=4 | Production E4M3 FP8 digit path with FP32 accumulation. Each modular residue uses four digit-product matrix operations. |
 | Non-widening integer matrix MAC | `vmmacc.vv`, W=1 | Add standalone microtests for `INT{8,16,32,64}×INT{8,16,32,64}→same-width` modular accumulation. Check modulo-`2^SEW` wraparound and `vstart=0` illegal-instruction precondition behavior separately from Ozaki reconstruction. |
 | 2× widening integer matrix MAC | `vwmmacc.vv`, W=2 | Add `INT8→INT16`, `INT16→INT32`, and `INT32→INT64` microtests. Compute geometry from `K_eff = λ × 2 × LMUL`, with accumulator `SEW` and packed/narrow input element width `SEW/2`. Cover signed, unsigned, `_su`, and `_us`. |
 | 4× widening integer matrix MAC | `vqmmacc.vv`, W=4 | Add `INT8→INT32`, `INT16→INT64`, and available `INT4→INT16` tests. Compute geometry from `K_eff = λ × 4 × LMUL`; verify Ozaki kernels continue to use dynamic `VLEN`, detected λ, and accumulator `SEW=32`. |
@@ -109,7 +109,7 @@ The current Ozaki-2 kernels exercise the row-major A / row-major B path needed b
 
 ## Expected DGEMM and SGEMM Performance
 
-The DGEMM and SGEMM kernels in this repository are expected to track the sustained integer matrix-matrix performance of the IME unit, scaled by the number of modular products required by the Ozaki reconstruction. DGEMM uses 15 coprime moduli near 256, while SGEMM uses an independent 7-modulus basis; each modulus requires one complete INT8 × INT8 → INT32 matrix multiplication over the same `M × N × K` problem.
+The DGEMM and SGEMM kernels use 15 and 7 coprime moduli respectively. Each modulus performs four FP8 digit matrix multiplications with FP32 accumulation, followed by exact digit recombination and CRT reconstruction.
 
 For a conventional GEMM, the useful floating-point work is counted as:
 
@@ -117,39 +117,40 @@ For a conventional GEMM, the useful floating-point work is counted as:
 FP work = 2 × M × N × K floating-point operations
 ```
 
-where one multiply-add contributes two FLOPs. The Ozaki-IME path performs the same logical `M × N × K` multiply-adds once per modulus in integer arithmetic:
+where one multiply-add contributes two FLOPs. The Ozaki-IME path performs four FP8 digit multiply-add streams per modulus:
 
 ```text
-Integer work = modulus_count × M × N × K INT8 MACs
-             = 15 × M × N × K for DGEMM
-             =  7 × M × N × K for SGEMM
+FP8 digit work = 4 × modulus_count × M × N × K FP8 MACs
+               = 60 × M × N × K for DGEMM
+               = 28 × M × N × K for SGEMM
 ```
 
 Equivalently, a single IME tile for the configured geometry computes a `64 × 64` output tile over `K_eff = 32`, or:
 
 ```text
-64 × 64 × 32 = 131,072 INT8 MACs per modulus
-15 × 131,072 = 1,966,080 INT8 MACs per DGEMM tile result
- 7 × 131,072 =   917,504 INT8 MACs per SGEMM tile result
+64 × 64 × 32 = 131,072 FP8 MACs per digit stream
+4 × 131,072 = 524,288 FP8 MACs per modulus
+15 × 524,288 = 7,864,320 FP8 MACs per DGEMM tile result
+ 7 × 524,288 = 3,670,016 FP8 MACs per SGEMM tile result
 ```
 
-If the sustained IME throughput is `P_int8_mac` INT8 MAC/s, the ideal large-matrix upper bounds are:
+If the sustained IME throughput is `P_fp8_mac` FP8 MAC/s, the ideal large-matrix upper bounds are:
 
 ```text
-Expected DGEMM FP MAC/s ≈ P_int8_mac / 15
-Expected SGEMM FP MAC/s ≈ P_int8_mac / 7
-Expected DGEMM FLOP/s   ≈ 2 × P_int8_mac / 15
-Expected SGEMM FLOP/s   ≈ 2 × P_int8_mac / 7
+Expected DGEMM FP MAC/s ≈ P_fp8_mac / 60
+Expected SGEMM FP MAC/s ≈ P_fp8_mac / 28
+Expected DGEMM FLOP/s   ≈ 2 × P_fp8_mac / 60
+Expected SGEMM FLOP/s   ≈ 2 × P_fp8_mac / 28
 ```
 
-If the IME performance number is reported as integer operations per second with one MAC counted as two integer operations, the equivalent estimate is:
+If the IME performance number is reported as FP8 operations per second with one MAC counted as two operations, the equivalent estimate is:
 
 ```text
-Expected DGEMM FLOP/s ≈ P_int8_ops / 15
-Expected SGEMM FLOP/s ≈ P_int8_ops / 7
+Expected DGEMM FLOP/s ≈ P_fp8_ops / 60
+Expected SGEMM FLOP/s ≈ P_fp8_ops / 28
 ```
 
-The estimates differ because DGEMM retains the 15-modulus CRT configuration while SGEMM uses the independent 7-modulus basis. Both paths retain the same signed INT8 IME arithmetic and reconstruction structure.
+The estimates differ because DGEMM retains the 15-modulus CRT configuration while SGEMM uses the independent 7-modulus basis. Both paths use the same E4M3 digit decomposition, FP32 accumulation, and CRT reconstruction structure.
 
 These formulas are compute-bound estimates. Real measured performance will be lower when matrix sizes are small or when non-IME work is significant, including exponent scanning, scaling, modular reduction of `A` and `B`, memory allocation and packing, CRT reconstruction, inverse scaling, and the final `alpha`/`beta` update. These overheads are mostly proportional to `M × K`, `K × N`, or `M × N`; the IME multiplication term is proportional to `M × N × K`, so the estimate becomes more accurate for large, well-tiled matrices with sufficiently large `K`.
 
